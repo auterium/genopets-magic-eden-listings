@@ -12,7 +12,7 @@ OK, pretty long weird name, but couldn't think of a better one (suggestions welc
 
 ### Pre-requisites to run
 - Rust
-- (Trunk)[https://trunkrs.dev/]
+- [Trunk](https://trunkrs.dev/)
 
 ### Run
 > trunk serve --open
