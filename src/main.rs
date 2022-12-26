@@ -62,10 +62,14 @@ impl From<&SearchForm> for AppMsg {
         }
 
         let owner = get_val(&search_form.owner);
+        let owner = (!owner.is_empty()).then(|| match Pubkey::from_str(&owner) {
+            Ok(owner) => owner,
+            Err(_) => Pubkey::default(),
+        });
 
         let data = SearchFormData {
             title: get_val(&search_form.title),
-            owner: Pubkey::from_str(&owner).ok(),
+            owner,
             collection: get_val(&search_form.collection),
         };
 
@@ -215,6 +219,7 @@ impl Component for App {
                 <div class="form-group col-md-4">
                     <label class="form-label">{ "Owner" }</label>
                     <input class="form-control" ref={ self.search_form.owner.clone() } oninput={ oninput.clone() } type="text" />
+                    <div class="form-text">{ "Search listings by owner address" }</div>
                 </div>
                 <div class="form-group col-md-4">
                     <label class="form-label">{ "Name" }</label>
