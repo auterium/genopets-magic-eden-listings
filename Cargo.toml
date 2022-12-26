@@ -1,0 +1,30 @@
+[package]
+name = "magic-eden-sft-tracker"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = "0.20.0"
+borsh = "0.9.3"
+rust_decimal = { version = "1.27.0", features = ["borsh", "maths"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.89"
+web-sys = { version = "0.3.60", features = ["console"] }
+yew = { version = "0.20.0", features = ["csr"] }
+
+gloo-net = "0.2"
+wasm-bindgen-futures = "0.4"
+
+# Serum DEX port
+num_enum = "0.5.0"
+arrayref = "0.3.6"
+bytemuck = "1.12.3"
+
+dex-v4 = { git = "https://github.com/Bonfida/dex-v4.git" }
+spl-token = "~3.3.0"
+solana-program = "~1.10"
+solana-sdk = "~1.10"
+
+asset-agnostic-orderbook = "1.0.0"

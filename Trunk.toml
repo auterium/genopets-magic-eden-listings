@@ -1,0 +1,7 @@
+[build]
+target = "index.html"
+dist = "dist"
+
+[[proxy]]
+rewrite = "/magic-eden/"
+backend = "https://api-mainnet.magiceden.io/"
