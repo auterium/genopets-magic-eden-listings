@@ -1,3 +1,6 @@
+mod trade_summary;
+
+use self::trade_summary::TradeSummary;
 use asset_agnostic_orderbook::state::{
     critbit::{LeafNode, Node, Slab},
     AccountTag,
@@ -17,11 +20,13 @@ macro_rules! console_log {
     ($($t:tt)*) => (web_sys::console::log_1(&format_args!($($t)*).to_string().into()))
 }
 
-const SERUM_V4: Pubkey = pubkey!("srmv4uTCPF81hWDaPyEN2mLZ8XbvzuEM6LsAxR8NpjU");
-
 // Workaround to use the macro in other modules. Kudos to
 // https://stackoverflow.com/questions/26731243/how-do-i-use-a-macro-across-module-files
+#[allow(unused)]
 pub(crate) use console_log;
+
+const SERUM_V4: Pubkey = pubkey!("srmv4uTCPF81hWDaPyEN2mLZ8XbvzuEM6LsAxR8NpjU");
+const PAGE_SIZE: usize = 25;
 
 fn main() {
     yew::Renderer::<App>::new().render();
@@ -43,6 +48,7 @@ pub struct SearchFormData {
 
 pub struct App {
     orders: HashMap<String, Vec<(Pubkey, LeafNode)>>,
+    trades: HashMap<String, Vec<Trade>>,
     markets: Vec<MagicEdenItem>,
     search_data: SearchFormData,
     search_form: SearchForm,
@@ -51,6 +57,7 @@ pub struct App {
 
 pub enum AppMsg {
     Orders(HashMap<String, Vec<(Pubkey, LeafNode)>>),
+    Trades(HashMap<String, Vec<Trade>>),
     Search(SearchFormData),
     Page(usize),
 }
@@ -82,14 +89,16 @@ impl Component for App {
     type Properties = ();
 
     fn create(ctx: &Context<Self>) -> Self {
-        let cb = ctx.link().callback(|orders| AppMsg::Orders(orders));
+        let cb_orders = ctx.link().callback(|orders| AppMsg::Orders(orders));
+        let cb_trades = ctx.link().callback(|trades| AppMsg::Trades(trades));
         let genopets_sfts = include_str!("../collections/genopets_sfts.json");
-        let markets: Vec<MagicEdenItem> = serde_json::from_str(genopets_sfts).unwrap();
 
-        wasm_bindgen_futures::spawn_local(sync_markets(markets.clone(), cb));
+        let markets: Vec<MagicEdenItem> = serde_json::from_str(genopets_sfts).unwrap();
+        wasm_bindgen_futures::spawn_local(sync_markets(markets.clone(), cb_orders, cb_trades));
 
         Self {
             orders: HashMap::new(),
+            trades: HashMap::new(),
             markets,
             search_data: SearchFormData::default(),
             search_form: SearchForm::default(),
@@ -100,6 +109,7 @@ impl Component for App {
     fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             AppMsg::Orders(orders) => self.orders = orders,
+            AppMsg::Trades(trades) => self.trades = trades,
             AppMsg::Search(data) => self.search_data = data,
             AppMsg::Page(page) => self.page = page,
         }
@@ -153,45 +163,36 @@ impl Component for App {
                     </tr>))
                 });
 
-                let asset_kind = match item.collection.as_str() {
-                    "genopets_augments" => "Augment",
-                    "genopets_genotype_crystals" => "Crystal",
-                    "genopets_reagents" => "Reagent",
-                    "genopets_cosmetics" => "Cosmetic",
-                    "genopets_power_ups" => "Power up",
-                    "genopets_terraform_seeds_sft" => "Terraform seed",
-                    "genopets_recipe_hunt" => "Recipe hunt missing page",
-                    _ => "Unknown"
-                };
+                let trades = self.trades.get(&item.base_vault_address).cloned();
 
                 html!(<tr key={ item.token_address.clone() }>
-                    <td>{ asset_kind }</td>
                     <td>
+                        <img src={ Some(item.token_image.clone()) } style="width: 230px; height: 230px" /><br/>
                         <a href={ format!("https://magiceden.io/sft/{}", item.market_address) } target="_blank">{ &item.token_title }</a>
                     </td>
-                    <td><img src={ Some(item.token_image.clone()) } style="width: 250px; height: 250px" /></td>
                     <td>
                         <div style="height: 250px; overflow: auto">
-                        <table class="table table-striped table-bordered">
-                            <thead>
-                                <tr>
-                                    <th>{ "Price" }</th>
-                                    <th>{ "Quantity" }</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                { for orders }
-                            </tbody>
-                        </table>
+                            <table class="table table-striped table-bordered">
+                                <thead>
+                                    <tr>
+                                        <th>{ "Price" }</th>
+                                        <th>{ "Quantity" }</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    { for orders }
+                                </tbody>
+                            </table>
                         </div>
                     </td>
+                    <td><TradeSummary { trades } /></td>
                 </tr>)
             })
-            .skip(self.page * 10)
-            .take(10);
+            .skip(self.page * PAGE_SIZE)
+            .take(PAGE_SIZE);
 
-        let mut pages = count / 10;
-        if count % 10 != 0 {
+        let mut pages = count / PAGE_SIZE;
+        if count % PAGE_SIZE != 0 {
             pages += 1;
         }
 
@@ -204,8 +205,8 @@ impl Component for App {
             };
 
             html!(<li { class }>
-                    <a class="page-link" { onclick }>{ page + 1 }</a>
-                </li>)
+                <a class="page-link" { onclick }>{ page + 1 }</a>
+            </li>)
         });
 
         let search_form = self.search_form.clone();
@@ -242,10 +243,9 @@ impl Component for App {
             <table class="table table-striped table-bordered">
                 <thead>
                     <tr>
-                        <th>{ "Asset type" }</th>
-                        <th>{ "Name" }</th>
-                        <th>{ "Image" }</th>
+                        <th>{ "Item" }</th>
                         <th>{ "Orders" }</th>
+                        <th>{ "Latest trades (30d)" }</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -261,10 +261,9 @@ impl Component for App {
 
 async fn sync_markets(
     markets: Vec<MagicEdenItem>,
-    cb: Callback<HashMap<String, Vec<(Pubkey, LeafNode)>>>,
+    cb_orders: Callback<HashMap<String, Vec<(Pubkey, LeafNode)>>>,
+    cb_trades: Callback<HashMap<String, Vec<Trade>>>,
 ) {
-    // TODO: make it an interval?
-
     let mut results = HashMap::new();
 
     for chunk in markets.chunks(100) {
@@ -306,7 +305,36 @@ async fn sync_markets(
         results.extend(iter);
     }
 
-    cb.emit(results);
+    cb_orders.emit(results);
+
+    let trades: Vec<SftTrades> = Request::get("https://node-api.flipsidecrypto.com/api/v2/queries/b76d9ca9-cc22-48d8-9917-6760c1ec5a50/data/latest")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let trades = trades
+        .into_iter()
+        .map(|item| (item.base_vault, item.trades))
+        .collect::<HashMap<_, _>>();
+
+    cb_trades.emit(trades);
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+struct SftTrades {
+    base_vault: String,
+    trades: Vec<Trade>,
+}
+
+#[derive(Clone, Deserialize, PartialEq)]
+pub struct Trade {
+    ts: String,
+    amount: Decimal,
+    price: Decimal,
 }
 
 struct MySlabIterator<'a> {
@@ -369,6 +397,7 @@ fn compute_ui_price(price: u64) -> Decimal {
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MagicEdenItem {
+    base_vault_address: String,
     asks_address: String,
     #[serde(deserialize_with = "parse_base58_pubkey")]
     market_address: Pubkey,
