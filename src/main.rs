@@ -1,13 +1,12 @@
-mod trade_summary;
+mod components;
+mod utils;
 
-use self::trade_summary::TradeSummary;
-use asset_agnostic_orderbook::state::{
-    critbit::{LeafNode, Node, Slab},
-    AccountTag,
-};
-use dex_v4::state::CallBackInfo;
+use self::components::open_orders::OpenOrders;
+use self::components::pagination::{Pagination, PaginationProps};
+use self::components::trade_summary::TradeSummary;
+use self::utils::{Listing, Listings};
 use gloo_net::http::Request;
-use rust_decimal::{Decimal, MathematicalOps};
+use rust_decimal::Decimal;
 use serde::{de, Deserialize};
 use serde_json::json;
 use solana_sdk::{account::Account, pubkey, pubkey::Pubkey};
@@ -47,7 +46,7 @@ pub struct SearchFormData {
 }
 
 pub struct App {
-    orders: HashMap<String, Vec<(Pubkey, LeafNode)>>,
+    orders: HashMap<String, Vec<Listing>>,
     trades: HashMap<String, Vec<Trade>>,
     markets: Vec<MagicEdenItem>,
     search_data: SearchFormData,
@@ -56,7 +55,7 @@ pub struct App {
 }
 
 pub enum AppMsg {
-    Orders(HashMap<String, Vec<(Pubkey, LeafNode)>>),
+    Orders(HashMap<String, Vec<Listing>>),
     Trades(HashMap<String, Vec<Trade>>),
     Search(SearchFormData),
     Page(usize),
@@ -94,7 +93,8 @@ impl Component for App {
         let genopets_sfts = include_str!("../collections/genopets_sfts.json");
 
         let markets: Vec<MagicEdenItem> = serde_json::from_str(genopets_sfts).unwrap();
-        wasm_bindgen_futures::spawn_local(sync_markets(markets.clone(), cb_orders, cb_trades));
+        wasm_bindgen_futures::spawn_local(sync_markets(markets.clone(), cb_orders));
+        wasm_bindgen_futures::spawn_local(fetch_trades(cb_trades));
 
         Self {
             orders: HashMap::new(),
@@ -139,30 +139,23 @@ impl Component for App {
             });
 
             if let Some(owner_key) = &owner_key {
-                orders.iter().find(|(owner, _)| owner == owner_key)?;
+                orders.iter().find(|listing| &listing.owner == owner_key)?;
             }
 
             Some((item, orders, owner_key))
         });
 
-        let count = markets.clone().count();
+        let pagination_props = PaginationProps {
+            current: self.page,
+            count: markets.clone().count(),
+            page_size: 25,
+            onclick: ctx.link().callback(|page| AppMsg::Page(page)),
+        };
 
         let markets = markets
+            .skip(self.page * PAGE_SIZE)
+            .take(PAGE_SIZE)
             .map(|(item, orders, owner_key)| {
-                let orders = orders.iter().filter_map(|(owner, node)| {
-                    match owner_key {
-                        Some(owner_key) if &owner_key != owner => return None,
-                        _ => {}
-                    }
-
-                    let price = compute_ui_price(node.price());
-
-                    Some(html!(<tr key={ node.key }>
-                        <td>{ price.round_dp(3).to_string() }</td>
-                        <td>{ node.base_quantity }</td>
-                    </tr>))
-                });
-
                 let trades = self.trades.get(&item.base_vault_address).cloned();
 
                 html!(<tr key={ item.token_address.clone() }>
@@ -170,44 +163,10 @@ impl Component for App {
                         <img src={ Some(item.token_image.clone()) } style="width: 230px; height: 230px" /><br/>
                         <a href={ format!("https://magiceden.io/sft/{}", item.market_address) } target="_blank">{ &item.token_title }</a>
                     </td>
-                    <td>
-                        <div style="height: 250px; overflow: auto">
-                            <table class="table table-striped table-bordered">
-                                <thead>
-                                    <tr>
-                                        <th>{ "Price" }</th>
-                                        <th>{ "Quantity" }</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    { for orders }
-                                </tbody>
-                            </table>
-                        </div>
-                    </td>
+                    <td><OpenOrders orders={ orders.clone() } {owner_key} /></td>
                     <td><TradeSummary { trades } /></td>
                 </tr>)
-            })
-            .skip(self.page * PAGE_SIZE)
-            .take(PAGE_SIZE);
-
-        let mut pages = count / PAGE_SIZE;
-        if count % PAGE_SIZE != 0 {
-            pages += 1;
-        }
-
-        let pagination = (0..pages).into_iter().map(|page| {
-            let onclick = ctx.link().callback(move |_| AppMsg::Page(page));
-            let class = if page == self.page {
-                "page-item active"
-            } else {
-                "page-item"
-            };
-
-            html!(<li { class }>
-                <a class="page-link" { onclick }>{ page + 1 }</a>
-            </li>)
-        });
+            });
 
         let search_form = self.search_form.clone();
         let oninput = ctx.link().callback(move |_| AppMsg::from(&search_form));
@@ -231,12 +190,12 @@ impl Component for App {
                     <select class="form-select" ref={ self.search_form.collection.clone() } { onchange }>
                         <option value="" selected=true>{ "All" }</option>
                         <option value="genopets_augments">{ "Augment" }</option>
-                        <option value="genopets_genotype_crystals">{ "Crystal" }</option>
-                        <option value="genopets_reagents">{ "Reagent" }</option>
                         <option value="genopets_cosmetics">{ "Cosmetic" }</option>
+                        <option value="genopets_genotype_crystals">{ "Crystal" }</option>
                         <option value="genopets_power_ups">{ "Power up" }</option>
-                        <option value="genopets_terraform_seeds_sft">{ "Terraform seed" }</option>
+                        <option value="genopets_reagents">{ "Reagent" }</option>
                         <option value="genopets_recipe_hunt">{ "Recipe hunt missing page" }</option>
+                        <option value="genopets_terraform_seeds_sft">{ "Terraform seed" }</option>
                     </select>
                 </div>
             </div>
@@ -252,17 +211,14 @@ impl Component for App {
                     { for markets }
                 </tbody>
             </table>
-            <ul class="pagination">
-                { for pagination }
-            </ul>
+            <Pagination ..pagination_props />
         </div>)
     }
 }
 
 async fn sync_markets(
     markets: Vec<MagicEdenItem>,
-    cb_orders: Callback<HashMap<String, Vec<(Pubkey, LeafNode)>>>,
-    cb_trades: Callback<HashMap<String, Vec<Trade>>>,
+    cb_orders: Callback<HashMap<String, Vec<Listing>>>,
 ) {
     let mut results = HashMap::new();
 
@@ -295,18 +251,18 @@ async fn sync_markets(
             .iter()
             .zip(res.result.value)
             .map(|(item, mut account)| {
-                let slab =
-                    Slab::<CallBackInfo>::from_buffer(&mut account.data, AccountTag::Asks).unwrap();
-                let orders = MySlabIterator::new(slab, true).collect::<Vec<_>>();
+                let listings = Listings::from_buffer(&mut account.data).to_vec();
 
-                (item.token_address.clone(), orders)
+                (item.token_address.clone(), listings)
             });
 
         results.extend(iter);
     }
 
     cb_orders.emit(results);
+}
 
+async fn fetch_trades(cb_trades: Callback<HashMap<String, Vec<Trade>>>) {
     let trades: Vec<SftTrades> = Request::get("https://node-api.flipsidecrypto.com/api/v2/queries/b76d9ca9-cc22-48d8-9917-6760c1ec5a50/data/latest")
         .send()
         .await
@@ -335,63 +291,6 @@ pub struct Trade {
     ts: String,
     amount: Decimal,
     price: Decimal,
-}
-
-struct MySlabIterator<'a> {
-    slab: Slab<'a, CallBackInfo>,
-    search_stack: Vec<u32>,
-    ascending: bool,
-}
-
-impl<'a> MySlabIterator<'a> {
-    fn new(slab: Slab<'a, CallBackInfo>, ascending: bool) -> Self {
-        Self {
-            search_stack: match slab.root() {
-                Some(root_node) => vec![root_node],
-                None => vec![],
-            },
-            slab,
-            ascending,
-        }
-    }
-}
-
-impl<'a> Iterator for MySlabIterator<'a> {
-    type Item = (Pubkey, LeafNode);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while let Some(current) = self.search_stack.pop() {
-            match Node::from_handle(current) {
-                Node::Inner => {
-                    let n = &self.slab.inner_nodes[(!current) as usize];
-                    self.search_stack.push(n.children[self.ascending as usize]);
-                    self.search_stack.push(n.children[!self.ascending as usize]);
-                }
-                Node::Leaf => {
-                    let owner = self.slab.callback_infos[current as usize].user_account;
-                    let leaf = self.slab.leaf_nodes[current as usize];
-
-                    return Some((owner, leaf));
-                }
-            }
-        }
-
-        None
-    }
-}
-
-fn compute_ui_price(price: u64) -> Decimal {
-    // This is a weitd number. I would've expected it to be 9496 (5% + 0.04%)
-    let fee_mult = Decimal::from_i128_with_scale(9520, 4);
-
-    let quote_currency_multiplier = Decimal::from_i128_with_scale(1_000_000, 0);
-    let price = Decimal::from_i128_with_scale(price as i128, 0);
-
-    let numerator = price * quote_currency_multiplier;
-    let denominator =
-        Decimal::from_i128_with_scale(1_000_000_000, 0) * Decimal::TWO.powu(32) * fee_mult;
-
-    numerator / denominator
 }
 
 #[derive(Clone, Deserialize)]

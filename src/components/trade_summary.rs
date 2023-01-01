@@ -1,4 +1,4 @@
-use super::Trade;
+use crate::Trade;
 use rust_decimal::Decimal;
 use yew::prelude::*;
 
