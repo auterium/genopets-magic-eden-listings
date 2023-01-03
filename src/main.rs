@@ -11,6 +11,7 @@ use serde::{de, Deserialize};
 use serde_json::json;
 use solana_sdk::{account::Account, pubkey, pubkey::Pubkey};
 use std::{collections::HashMap, str::FromStr};
+use utils::Recipes;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
@@ -48,6 +49,8 @@ pub struct SearchFormData {
 pub struct App {
     orders: HashMap<String, Vec<Listing>>,
     trades: HashMap<String, Vec<Trade>>,
+    token_prices: Option<(Decimal, Decimal)>,
+    recipes: Recipes,
     markets: Vec<MagicEdenItem>,
     search_data: SearchFormData,
     search_form: SearchForm,
@@ -57,6 +60,7 @@ pub struct App {
 pub enum AppMsg {
     Orders(HashMap<String, Vec<Listing>>),
     Trades(HashMap<String, Vec<Trade>>),
+    TokenPrices(Decimal, Decimal),
     Search(SearchFormData),
     Page(usize),
 }
@@ -90,15 +94,23 @@ impl Component for App {
     fn create(ctx: &Context<Self>) -> Self {
         let cb_orders = ctx.link().callback(|orders| AppMsg::Orders(orders));
         let cb_trades = ctx.link().callback(|trades| AppMsg::Trades(trades));
+        let cb_token_prices = ctx
+            .link()
+            .callback(|(ki_price, gene_price)| AppMsg::TokenPrices(ki_price, gene_price));
         let genopets_sfts = include_str!("../collections/genopets_sfts.json");
 
         let markets: Vec<MagicEdenItem> = serde_json::from_str(genopets_sfts).unwrap();
+        let recipes = Recipes::new(markets.clone());
+
         wasm_bindgen_futures::spawn_local(sync_markets(markets.clone(), cb_orders));
         wasm_bindgen_futures::spawn_local(fetch_trades(cb_trades));
+        wasm_bindgen_futures::spawn_local(token_prices(cb_token_prices));
 
         Self {
             orders: HashMap::new(),
             trades: HashMap::new(),
+            token_prices: None,
+            recipes,
             markets,
             search_data: SearchFormData::default(),
             search_form: SearchForm::default(),
@@ -112,6 +124,9 @@ impl Component for App {
             AppMsg::Trades(trades) => self.trades = trades,
             AppMsg::Search(data) => self.search_data = data,
             AppMsg::Page(page) => self.page = page,
+            AppMsg::TokenPrices(ki_price, gene_price) => {
+                self.token_prices = Some((ki_price, gene_price))
+            }
         }
 
         true
@@ -158,11 +173,40 @@ impl Component for App {
             .map(|(item, orders, owner_key)| {
                 let trades = self.trades.get(&item.base_vault_address).cloned();
 
+                let recipe = match self.recipes.get(&item.token_address) {
+                    Some(recipe) => {
+                        let reagents = recipe.reagents
+                            .iter()
+                            .map(|(reagent, amount)| html!(<li>{ format!("{} {}", amount, reagent) }</li>));
+
+                        let total_cost = self.token_prices
+                            .map(|(ki_price, gene_price)| {
+                                let ki_cost = recipe.ki_cost * ki_price;
+                                let gene_cost = recipe.gene_cost * gene_price;
+                                let total_cost = ki_cost + gene_cost;
+
+                                format!(" {} SOL", total_cost.round_dp(3))
+                            })
+                            .unwrap_or_default();
+
+                        html!(<>
+                            { total_cost }
+                            <hr/>
+                            <h6>{ "Recipe" }</h6>
+                            <ul>
+                                { for reagents }
+                            </ul>
+                        </>)
+                    }
+                    None => html!(<></>),
+                };
+
                 html!(<tr key={ item.token_address.clone() }>
                     <td>
                         <img src={ Some(item.token_image.clone()) } style="width: 230px; height: 230px" /><br/>
                         <a href={ format!("https://magiceden.io/sft/{}", item.market_address) } target="_blank">{ &item.token_title }</a>
                     </td>
+                    <td>{ recipe }</td>
                     <td><OpenOrders orders={ orders.clone() } {owner_key} /></td>
                     <td><TradeSummary { trades } /></td>
                 </tr>)
@@ -203,6 +247,7 @@ impl Component for App {
                 <thead>
                     <tr>
                         <th>{ "Item" }</th>
+                        <th>{ "Production cost" }</th>
                         <th>{ "Orders" }</th>
                         <th>{ "Latest trades (30d)" }</th>
                     </tr>
@@ -214,6 +259,38 @@ impl Component for App {
             <Pagination ..pagination_props />
         </div>)
     }
+}
+
+async fn token_prices(cb_token_prices: Callback<(Decimal, Decimal)>) {
+    let res: JupiterPrice = Request::get("https://price.jup.ag/v3/price?ids=kiGenopAScF8VF31Zbtx2Hg8qA5ArGqvnVtXb83sotc&vsToken=So11111111111111111111111111111111111111112")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let ki_price = res
+        .data
+        .get("kiGenopAScF8VF31Zbtx2Hg8qA5ArGqvnVtXb83sotc")
+        .unwrap()
+        .price;
+
+    let res: JupiterPrice = Request::get("https://price.jup.ag/v3/price?ids=GENEtH5amGSi8kHAtQoezp1XEXwZJ8vcuePYnXdKrMYz&vsToken=So11111111111111111111111111111111111111112")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let gene_price = res
+        .data
+        .get("GENEtH5amGSi8kHAtQoezp1XEXwZJ8vcuePYnXdKrMYz")
+        .unwrap()
+        .price;
+
+    cb_token_prices.emit((ki_price, gene_price));
 }
 
 async fn sync_markets(
@@ -370,4 +447,14 @@ fn parse_base58_pubkey<'de, D: de::Deserializer<'de>>(deserializer: D) -> Result
     let val: String = Deserialize::deserialize(deserializer)?;
 
     Pubkey::from_str(&val).map_err(|e| de::Error::custom(e.to_string()))
+}
+
+#[derive(Deserialize)]
+struct JupiterPrice {
+    data: HashMap<String, JupiterPriceData>,
+}
+
+#[derive(Deserialize)]
+struct JupiterPriceData {
+    price: Decimal,
 }
