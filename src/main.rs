@@ -185,7 +185,7 @@ impl Component for App {
                                 let gene_cost = recipe.gene_cost * gene_price;
                                 let total_cost = ki_cost + gene_cost;
 
-                                format!(" {} SOL", total_cost.round_dp(3))
+                                format!(" {} SOL", total_cost.round_dp(4))
                             })
                             .unwrap_or_default();
 

@@ -1786,7 +1786,7 @@ function initSync(module) {
 
 async function init(input) {
     if (typeof input === 'undefined') {
-        input = new URL('magic-eden-sft-tracker-68190fc171d12ef4_bg.wasm', import.meta.url);
+        input = new URL('magic-eden-sft-tracker-584764d24c7afffe_bg.wasm', import.meta.url);
     }
     const imports = getImports();
 
