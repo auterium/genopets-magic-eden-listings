@@ -5,6 +5,7 @@ use self::components::open_orders::OpenOrders;
 use self::components::pagination::{Pagination, PaginationProps};
 use self::components::trade_summary::TradeSummary;
 use self::utils::{Listing, Listings};
+use dex_v4::state::{UserAccountHeader, UserAccount};
 use gloo_net::http::Request;
 use rust_decimal::Decimal;
 use serde::{de, Deserialize};
@@ -55,6 +56,7 @@ pub struct App {
     search_data: SearchFormData,
     search_form: SearchForm,
     page: usize,
+    user_accounts: HashMap<Pubkey, UserAccountHeader>,
 }
 
 pub enum AppMsg {
@@ -63,6 +65,7 @@ pub enum AppMsg {
     TokenPrices(Decimal, Decimal),
     Search(SearchFormData),
     Page(usize),
+    UserAccounts(HashMap<Pubkey, UserAccountHeader>),
 }
 
 impl From<&SearchForm> for AppMsg {
@@ -115,17 +118,48 @@ impl Component for App {
             search_data: SearchFormData::default(),
             search_form: SearchForm::default(),
             page: 0,
+            user_accounts: HashMap::new(),
         }
     }
 
-    fn update(&mut self, _ctx: &Context<Self>, msg: Self::Message) -> bool {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             AppMsg::Orders(orders) => self.orders = orders,
             AppMsg::Trades(trades) => self.trades = trades,
-            AppMsg::Search(data) => self.search_data = data,
+            AppMsg::Search(data) => {
+                let old_data = std::mem::replace(&mut self.search_data, data);
+
+                let new_owner = match self.search_data.owner.as_ref() {
+                    Some(new_owner) if new_owner.as_ref() != &[0u8; 32] => match old_data.owner.as_ref() {
+                        None => Some(new_owner),
+                        Some(old_owner) if new_owner != old_owner => Some(new_owner),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+
+                if let Some(new_owner) = new_owner {
+                    let new_owner = new_owner.to_bytes();
+                    let cb_accounts = ctx.link().callback(AppMsg::UserAccounts);
+
+                    let accounts = self.markets
+                        .iter()
+                        .map(|item| {
+                            let seeds: [&[u8]; 2] = [&item.market_address.to_bytes(), &new_owner];
+
+                            Pubkey::find_program_address(&seeds, &SERUM_V4).0.to_string()
+                        })
+                        .collect();
+
+                    wasm_bindgen_futures::spawn_local(sync_accounts(accounts, cb_accounts));
+                }
+            },
             AppMsg::Page(page) => self.page = page,
             AppMsg::TokenPrices(ki_price, gene_price) => {
-                self.token_prices = Some((ki_price, gene_price))
+                self.token_prices = Some((ki_price, gene_price));
+            }
+            AppMsg::UserAccounts(accounts) => {
+                self.user_accounts = accounts;
             }
         }
 
@@ -154,7 +188,9 @@ impl Component for App {
             });
 
             if let Some(owner_key) = &owner_key {
-                orders.iter().find(|listing| &listing.owner == owner_key)?;
+                if !self.user_accounts.contains_key(owner_key) {
+                    orders.iter().find(|listing| &listing.owner == owner_key)?;
+                }
             }
 
             Some((item, orders, owner_key))
@@ -212,6 +248,36 @@ impl Component for App {
                 </tr>)
             });
 
+        let pending_collect = if self.search_data.owner.is_some() && !self.user_accounts.is_empty() {
+            let rows = self.user_accounts
+                .iter()
+                .map(|(key, account)| {
+                    let market = account.market.to_string();
+                    let pending = Decimal::from_i128_with_scale(account.quote_token_free as i128, 9).round_dp(3);
+
+                    html!(<tr key={ key.to_string() }>
+                        <td>
+                            <a href={ format!("https://magiceden.io/sft/{market}") } target="_blank">{ market }</a>
+                        </td>
+                        <td>{ pending }</td>
+                    </tr>)
+                });
+
+            html!(<table class="table table-striped table-bordered">
+                <thead>
+                    <tr>
+                        <th>{ "Market" }</th>
+                        <th>{ "Pending SOL collect" }</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    { for rows }
+                </tbody>
+            </table>)
+        } else {
+            html!(<></>)
+        };
+
         let search_form = self.search_form.clone();
         let oninput = ctx.link().callback(move |_| AppMsg::from(&search_form));
 
@@ -243,6 +309,7 @@ impl Component for App {
                     </select>
                 </div>
             </div>
+            { pending_collect }
             <table class="table table-striped table-bordered">
                 <thead>
                     <tr>
@@ -291,6 +358,57 @@ async fn token_prices(cb_token_prices: Callback<(Decimal, Decimal)>) {
         .price;
 
     cb_token_prices.emit((ki_price, gene_price));
+}
+
+async fn sync_accounts(
+    accounts: Vec<String>,
+    cb_accounts: Callback<HashMap<Pubkey, UserAccountHeader>>,
+) {
+    let mut results = HashMap::new();
+
+    for chunk in accounts.chunks(100) {
+        let addresses = chunk.to_vec();
+
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getMultipleAccounts",
+            "params": [
+                addresses,
+                { "encoding": "jsonParsed" }
+            ]
+        });
+
+        let res = Request::post("https://try-rpc.mainnet.solana.blockdaemon.tech/")
+            .json(&body)
+            .unwrap()
+            .send()
+            .await
+            .unwrap()
+            .json::<JsonRpcResult<Vec<Option<UiAccount>>>>()
+            .await
+            .unwrap();
+
+        let iter = chunk
+            .iter()
+            .zip(res.result.value)
+            .filter_map(|(_, account)| {
+                let mut account = account?;
+                let account = UserAccount::from_buffer(&mut account.data).ok()?;
+
+                Some((account.header.owner.clone(), account.header.to_owned()))
+            });
+
+        results.extend(iter);
+    }
+
+    for header in results.values() {
+        console_log!("{}", header.market);
+    }
+
+    console_log!("Found {}/{} user accounts", results.len(), accounts.len());
+
+    cb_accounts.emit(results);
 }
 
 async fn sync_markets(
