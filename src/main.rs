@@ -248,19 +248,23 @@ impl Component for App {
                 </tr>)
             });
 
-        let pending_collect = if self.search_data.owner.is_some() && !self.user_accounts.is_empty() {
+        let pending_collect = (self.search_data.owner.is_some() && !self.user_accounts.is_empty()).then(|| {
             let rows = self.user_accounts
                 .iter()
-                .map(|(key, account)| {
+                .filter_map(|(key, account)| {
+                    if account.quote_token_free == 0 {
+                        return None;
+                    }
+
                     let market = account.market.to_string();
                     let pending = Decimal::from_i128_with_scale(account.quote_token_free as i128, 9).round_dp(3);
 
-                    html!(<tr key={ key.to_string() }>
+                    Some(html!(<tr key={ key.to_string() }>
                         <td>
                             <a href={ format!("https://magiceden.io/sft/{market}") } target="_blank">{ market }</a>
                         </td>
                         <td>{ pending }</td>
-                    </tr>)
+                    </tr>))
                 });
 
             html!(<table class="table table-striped table-bordered">
@@ -274,9 +278,7 @@ impl Component for App {
                     { for rows }
                 </tbody>
             </table>)
-        } else {
-            html!(<></>)
-        };
+        });
 
         let search_form = self.search_form.clone();
         let oninput = ctx.link().callback(move |_| AppMsg::from(&search_form));
@@ -396,7 +398,7 @@ async fn sync_accounts(
                 let mut account = account?;
                 let account = UserAccount::from_buffer(&mut account.data).ok()?;
 
-                Some((account.header.owner.clone(), account.header.to_owned()))
+                Some((account.header.market.clone(), account.header.to_owned()))
             });
 
         results.extend(iter);
