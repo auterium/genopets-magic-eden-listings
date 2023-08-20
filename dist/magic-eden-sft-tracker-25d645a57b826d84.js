@@ -1807,7 +1807,7 @@ async function __wbg_init(input) {
     if (wasm !== undefined) return wasm;
 
     if (typeof input === 'undefined') {
-        input = new URL('magic-eden-sft-tracker-9ed1e0f817ce431f_bg.wasm', import.meta.url);
+        input = new URL('magic-eden-sft-tracker-25d645a57b826d84_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

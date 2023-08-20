@@ -288,6 +288,11 @@ impl Component for App {
 
         html!(<div class="container">
             <div class="row">
+                <h4>{ "Feeling generous?" }</h4>
+                <p>{ "Was this useful for you and you're feeling generous? Buy me a coffee! Feel free to send any coin to this Solana wallet:" }</p>
+                <pre>{ "7EtuuNs8jqpEUhiCQxf25mUiLzoMuCBkTnjK4YrZC5Bd" }</pre>
+            </div>
+            <div class="row">
                 <div class="form-group col-md-4">
                     <label class="form-label">{ "Owner" }</label>
                     <input class="form-control" ref={ self.search_form.owner.clone() } oninput={ oninput.clone() } type="text" />
